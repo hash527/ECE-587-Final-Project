@@ -223,18 +223,23 @@ bpred_dir_create (
       if (!pred_dir->config.two.l2table)
 	fatal("cannot allocate second level table");
 
-/* 
- * Alpha 21264 uses 3-bit saturating counters in the local pattern history table (PHT).
- * These replace the standard 2-bit counters used in SimpleScalar.
- * Counter range: [0..7], weak threshold at 4.
- */
+	  /* We need to use 3-bit up-down saturating counters in the l2table (local PHT in Alpha 21264) */
+  #ifdef ALPHA_21264_BP
       flipflop = 3;
       for (cnt = 0; cnt < l2size; cnt++)
-        {
+      {
           pred_dir->config.two.l2table[cnt] = flipflop;
-        //	  flipflop = 3 - flipflop;
           flipflop = 7 - flipflop;
-        }
+      }
+  #else
+      flipflop = 1;
+      for (cnt = 0; cnt < l2size; cnt++)
+      {
+          pred_dir->config.two.l2table[cnt] = flipflop;
+          flipflop = 3 - flipflop;
+      }
+  #endif
+
       break;
     }
 
@@ -543,10 +548,13 @@ bpred_dir_lookup(struct bpred_dir_t *pred_dir,	/* branch dir predictor inst */
       }
       break;
     case BPred2bit:
-//      p = &pred_dir->config.bimod.table[BIMOD_HASH(pred_dir, baddr)];      
       /* use global branch history to index global and meta predictor */
 	  /* NOTE: meta predictor also uses BPred2bit as its class */
-      p = &pred_dir->config.bimod.table[GLOBAL_META_INDEX];
+      #ifdef ALPHA_21264_BP
+          p = &pred_dir->config.bimod.table[GLOBAL_META_INDEX];
+      #else
+          p = &pred_dir->config.bimod.table[BIMOD_HASH(pred_dir, baddr)];
+      #endif      
       break;
     case BPredTaken:
     case BPredNotTaken:
@@ -604,9 +612,12 @@ bpred_lookup(struct bpred_t *pred,	/* branch predictor instance */
 	  dir_update_ptr->pmeta = meta;
 	  dir_update_ptr->dir.meta  = (*meta >= 2);
 	  dir_update_ptr->dir.bimod = (*bimod >= 2);
-	  /* use 3-bit up-down saturating counters in the l2table (local PHT in Alpha 21264) */
-//	  dir_update_ptr->dir.twolev  = (*twolev >= 2);
-	  dir_update_ptr->dir.twolev  = (*twolev >= 4);
+	  /* We need to use 3-bit up-down saturating counters in the l2table (local PHT in Alpha 21264) */
+    #ifdef ALPHA_21264_BP
+        dir_update_ptr->dir.twolev  = (*twolev >= 4);   /* Alpha 21264 (3-bit) */
+    #else
+        dir_update_ptr->dir.twolev  = (*twolev >= 2);   /* Original SimpleScalar (2-bit) */
+    #endif
 	  if (*meta >= 2)
 	    {
 	      dir_update_ptr->pdir1 = twolev;
@@ -722,11 +733,7 @@ bpred_lookup(struct bpred_t *pred,	/* branch predictor instance */
       /* BTB miss -- just return a predicted direction */
 	  if (dir_update_ptr->pmeta != NULL && *(dir_update_ptr->pmeta) >= 2 )
 	  {
-      /* 
-      * In Alpha 21264 mode:
-      *   - The 2-level (local history) predictor uses 3-bit counters.
-      *   - A prediction is considered 'taken' when counter >= 4.
-      */
+		/* use the 3-bit counter in twolev predictor as pdir1 */
       	return ((*(dir_update_ptr->pdir1) >= 4)
 	  	    ? /* taken */ 1
 	  	    : /* not taken */ 0);
@@ -744,10 +751,7 @@ bpred_lookup(struct bpred_t *pred,	/* branch predictor instance */
       /* BTB hit, so return target if it's a predicted-taken branch */
 	  if (dir_update_ptr->pmeta != NULL && *(dir_update_ptr->pmeta) >= 2 )
 	  {
-      /* 
-      * Alpha 21264: the 'twolev' predictor uses 3-bit counters.
-      * If the meta predictor selects the 2-level predictor, use threshold = 4 to decide 'taken'.
-      */    
+		/* use the 3-bit counter in twolev predictor as pdir1 */
       	return ((*(dir_update_ptr->pdir1) >= 4)
 	  	    ? /* taken */ pbtb->target
 	  	    : /* not taken */ 0);
@@ -887,9 +891,11 @@ bpred_update(struct bpred_t *pred,	/* branch predictor instance */
     }
 
   /* update global branch history */
+  #ifdef ALPHA_21264_BP
   global_bhist_reg = (global_bhist_reg << 1) | (!!taken);
   global_bhist_reg = global_bhist_reg & ((1 << BHIST_REG_WIDTH) - 1);
-
+  #endif
+  
   /* find BTB entry if it's a taken branch (don't allocate for non-taken) */
   if (taken)
     {
